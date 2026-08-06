@@ -1,3 +1,8 @@
-data/
-chroma_db/
+# 코퍼스 사본과 벡터 저장소. 원본에서 언제든 다시 만들 수 있고,
+# 사내 코드 원문이 그대로 들어 있어 공개 레포에 올리면 안 된다.
+/data/
+/chroma_db/
+
+.venv/
+__pycache__/
 .DS_Store
