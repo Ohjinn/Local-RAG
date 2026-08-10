@@ -20,12 +20,20 @@ collect_docs.py 가 만든 manifest.json 을 읽는다. 디렉토리를 glob 하
 덜 중요하다는 뜻이 아니라 더 구체적이라는 뜻이고, 질문도 대개 구체적이라
 깊은 청크가 정답인 경우가 많다. 깊이로 감점하면 오히려 손해다.
 
-지금은 매번 전체를 다시 만든다. 858 청크에 몇 분 걸리므로 스케줄로
-돌리기 전에 증분 갱신(파일 해시를 남겨 바뀐 것만 교체)이 먼저 필요하다.
+두 번째 실행부터는 바뀐 문서만 다시 임베딩한다. 파일 내용의 sha256 을
+청크 메타데이터(`doc_hash`)에 같이 넣어 두고, 다음 실행 때 manifest 의
+현재 해시와 비교해 새 문서·바뀐 문서만 지웠다 다시 넣는다. 해시를 별도
+상태 파일이 아니라 인덱스 안에 두는 이유는, 상태 파일은 인덱스와 따로
+놀다가 어긋나고 나중에 Chroma 를 k3s 로 옮길 때 따라가지도 않기 때문이다.
+
+청킹 규칙 자체를 고쳤을 때는 파일이 안 바뀌었으니 해시도 같다. 그때는
+`--full` 로 통째로 다시 만들어야 한다.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -93,6 +101,13 @@ code_splitters = {
 MARKDOWN_CATEGORIES = {"docs", "context", "history"}
 
 
+def file_hash(path: Path) -> str:
+    """파일 내용의 sha256. mtime 이 아니라 내용을 보는 이유는, collect_docs.py
+    가 원본을 data/ 로 복사하면서 mtime 을 새로 찍기 때문이다. 내용이 그대로면
+    다시 임베딩할 이유가 없다."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def breadcrumb(entry: dict, headers: list[str]) -> str:
     """청크 본문 맨 앞에 붙일 출처 경로."""
     trail = [f"{entry['source']}/{entry['path'].split('/', 1)[-1]}"]
@@ -131,7 +146,7 @@ def split_plain(text: str, entry: dict, splitter) -> list[Document]:
     ]
 
 
-def chunk(entry: dict) -> list[Document]:
+def chunk(entry: dict, doc_hash: str) -> list[Document]:
     text = (DATA / entry["path"]).read_text(encoding="utf-8")
     category = entry["category"]
 
@@ -143,6 +158,8 @@ def chunk(entry: dict) -> list[Document]:
         docs = split_plain(text, entry, infra_splitter)
 
     # 출처 정보는 전부 스칼라로 넣는다. Chroma 가 리스트를 못 받는다.
+    # doc_hash / embed_model 은 다음 실행 때 무엇을 다시 만들지 판단하는
+    # 근거다. 인덱스가 곧 상태 파일 역할을 한다.
     for d in docs:
         d.metadata.update(
             source=entry["source"],
@@ -150,32 +167,55 @@ def chunk(entry: dict) -> list[Document]:
             path=entry["path"],
             origin=entry["origin"],
             ext=entry["ext"],
+            doc_hash=doc_hash,
+            embed_model=EMBED_MODEL,
         )
     return docs
 
 
-def build() -> None:
+def read_index(store: Chroma) -> tuple[dict[str, list[str]], dict[str, str], str]:
+    """기존 인덱스에서 문서별 청크 id·해시와, 만들 때 쓴 임베딩 모델을 읽는다.
+
+    벡터는 안 가져오고 메타데이터만 본다. 858 청크 기준 한순간이다.
+    """
+    got = store.get(include=["metadatas"])
+
+    ids_by_path: dict[str, list[str]] = {}
+    hash_by_path: dict[str, str] = {}
+    embed_used = ""
+
+    for cid, md in zip(got["ids"], got["metadatas"]):
+        path = md.get("path", "")
+        ids_by_path.setdefault(path, []).append(cid)
+        hash_by_path[path] = md.get("doc_hash", "")
+        embed_used = embed_used or md.get("embed_model", "")
+
+    return ids_by_path, hash_by_path, embed_used
+
+
+def build(full: bool = False) -> None:
     if not MANIFEST.exists():
         raise SystemExit("manifest.json 이 없다. collect_docs.py 를 먼저 돌려라.")
 
     entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
-    chunks: list[Document] = []
-    for entry in entries:
-        chunks.extend(chunk(entry))
+    # 빈 파일은 청크가 0 개라 인덱스에 아무 흔적도 남기지 못한다. 걸러내지
+    # 않으면 매 실행마다 "새 문서" 로 잡혀 "바뀐 것 없음" 판정이 영영 나오지
+    # 않는다. azure-standard 의 빈 outputs.tf 2 개가 실제로 그랬다.
+    blank = {
+        e["path"]
+        for e in entries
+        if not (DATA / e["path"]).read_text(encoding="utf-8").strip()
+    }
+    if blank:
+        entries = [e for e in entries if e["path"] not in blank]
+        print(f"빈 파일 {len(blank)} 개는 건너뛴다.")
 
-    by_cat: dict[str, int] = {}
-    for d in chunks:
-        by_cat[d.metadata["category"]] = by_cat.get(d.metadata["category"], 0) + 1
+    hashes = {e["path"]: file_hash(DATA / e["path"]) for e in entries}
 
-    print(f"문서 {len(entries)} 개 → 청크 {len(chunks)} 개")
-    for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1]):
-        print(f"  {k:12} {v:5} 청크")
-
-    # 임베딩 모델이 바뀌면 기존 벡터와 차원도 의미도 안 맞는다. 섞이지
-    # 않도록 통째로 비우고 다시 만든다.
-    if CHROMA.exists():
+    if full and CHROMA.exists():
         shutil.rmtree(CHROMA)
+        print("--full: 기존 인덱스를 지웠다.")
 
     embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA)
     store = Chroma(
@@ -184,15 +224,76 @@ def build() -> None:
         persist_directory=str(CHROMA),
     )
 
-    # 한 번에 넣으면 네트워크 너머 맥북이 다 끝날 때까지 아무 출력이 없다.
-    # 나눠 넣어야 어디까지 갔는지 보인다.
-    batch = 64
-    for i in range(0, len(chunks), batch):
-        store.add_documents(chunks[i : i + batch])
-        print(f"  임베딩 {min(i + batch, len(chunks)):5}/{len(chunks)}", flush=True)
+    ids_by_path, hash_by_path, embed_used = read_index(store)
 
-    print(f"\n인덱스 완료 → {CHROMA} (collection: {COLLECTION}, embed: {EMBED_MODEL})")
+    # 임베딩 모델이 바뀌면 기존 벡터와 차원도 의미도 안 맞는다. 섞어 두면
+    # 검색이 조용히 이상해지므로 컬렉션째 버리고 다시 만든다. 디렉토리를
+    # 지우지 않고 컬렉션을 지우는 건, 이미 열려 있는 sqlite 핸들을
+    # 흔들지 않으면서 차원 제약까지 같이 털어내기 위해서다.
+    if embed_used and embed_used != EMBED_MODEL:
+        print(f"임베딩 모델이 {embed_used} → {EMBED_MODEL} 로 바뀌었다. 전체 재생성한다.")
+        store.delete_collection()
+        store = Chroma(
+            collection_name=COLLECTION,
+            embedding_function=embeddings,
+            persist_directory=str(CHROMA),
+        )
+        ids_by_path, hash_by_path = {}, {}
+
+    added = [e for e in entries if e["path"] not in hash_by_path]
+    changed = [
+        e
+        for e in entries
+        if e["path"] in hash_by_path and hash_by_path[e["path"]] != hashes[e["path"]]
+    ]
+    removed = [p for p in ids_by_path if p not in hashes]
+    kept = len(entries) - len(added) - len(changed)
+
+    print(f"문서 {len(entries)} 개 — 새로 {len(added)}, 변경 {len(changed)}, "
+          f"삭제 {len(removed)}, 그대로 {kept}")
+
+    if not added and not changed and not removed:
+        print("바뀐 것이 없다. 임베딩을 건너뛴다.")
+        print(f"인덱스 유지 → {CHROMA} (청크 {len(store.get(include=[])['ids'])} 개)")
+        return
+
+    # 바뀐 문서는 옛 청크를 먼저 지운다. 청크 경계가 달라지면 새로 넣는
+    # 것만으로는 옛 청크가 그대로 남아 검색에 계속 걸린다.
+    stale = [cid for e in changed for cid in ids_by_path[e["path"]]]
+    stale += [cid for p in removed for cid in ids_by_path[p]]
+    if stale:
+        store.delete(ids=stale)
+        print(f"  옛 청크 {len(stale)} 개 삭제")
+
+    chunks: list[Document] = []
+    for entry in added + changed:
+        chunks.extend(chunk(entry, hashes[entry["path"]]))
+
+    if chunks:
+        by_cat: dict[str, int] = {}
+        for d in chunks:
+            by_cat[d.metadata["category"]] = by_cat.get(d.metadata["category"], 0) + 1
+        print(f"  새 청크 {len(chunks)} 개")
+        for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1]):
+            print(f"    {k:12} {v:5} 청크")
+
+        # 한 번에 넣으면 네트워크 너머 맥북이 다 끝날 때까지 아무 출력이
+        # 없다. 나눠 넣어야 어디까지 갔는지 보인다.
+        batch = 64
+        for i in range(0, len(chunks), batch):
+            store.add_documents(chunks[i : i + batch])
+            print(f"  임베딩 {min(i + batch, len(chunks)):5}/{len(chunks)}", flush=True)
+
+    total = len(store.get(include=[])["ids"])
+    print(f"\n인덱스 완료 → {CHROMA} "
+          f"(collection: {COLLECTION}, embed: {EMBED_MODEL}, 청크 {total} 개)")
 
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="인덱스를 지우고 전부 다시 만든다. 청킹 규칙을 고쳤을 때 쓴다.",
+    )
+    build(full=parser.parse_args().full)

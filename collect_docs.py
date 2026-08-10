@@ -101,6 +101,22 @@ SOURCES = [
         git_log=True,
     ),
     Source(
+        alias="homelab-ha",
+        root=HOME / "git_code/homelab-ha",
+        exts={".yaml", ".yml", ".md"},
+        # secrets.yaml 에는 API 키와 위경도가 실제 값으로 들어 있다. HA 쪽
+        # .gitignore 로도 막지만 여기서도 막는다. 한쪽이 뚫려도 다른 쪽이 잡는다.
+        #
+        # .storage/ 는 넣지 않는다. 엔티티·기기·영역 레지스트리가 있어서 탐나지만
+        # 같은 디렉토리에 auth 와 비밀번호 해시가 같이 있다. 무엇이 있는지는
+        # 인덱스가 아니라 질의 시점에 /api/states 로 live 로 묻는 게 맞다.
+        # 엔티티 상태는 계속 변해서 벡터에 넣어 두면 금방 낡는다.
+        #
+        # blueprints/ 는 HA 가 기본 제공하는 것들이라 내 설정이 아니다.
+        exclude={"secrets.yaml", ".storage", "blueprints", "backups", "deps", "tts"},
+        git_log=True,
+    ),
+    Source(
         alias="context",
         root=HOME / ".claude",
         exts={".md"},
