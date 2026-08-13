@@ -109,10 +109,20 @@ RAG_LLM=qwen2.5:latest python query.py "..."     # 7B, 대략 두 배 빠름
 
 ## 쓰는 법
 
+환경은 uv 로 잡는다. `uv.lock` 을 커밋해 두어서 어느 기계에서든 같은
+버전 조합이 선다.
+
 ```bash
-python collect_docs.py     # 원본 → data/
-python build_index.py      # data/ → chroma_db/ (바뀐 문서만)
-python query.py "hermes 가 왜 안 뜨나"
+uv sync                    # .venv 생성 + 의존성 설치 (4 초)
+```
+
+apt 의 `python3-venv` 는 필요 없다. uv 가 가상환경도 파이썬 자체도
+직접 관리한다.
+
+```bash
+uv run collect_docs.py     # 원본 → data/
+uv run build_index.py      # data/ → chroma_db/ (바뀐 문서만)
+uv run query.py "hermes 가 왜 안 뜨나"
 ```
 
 `build_index.py` 는 두 번째 실행부터 바뀐 문서만 다시 임베딩한다. 파일
@@ -154,15 +164,29 @@ python query.py --show "..."                       # 검색된 청크 원문 출
 
 ## 성능
 
-문서 184 개 → 청크 858 개 (인덱스 12MB).
+2026-08-13 dev-01(LXC, 2 vCPU / 4GB) 실측. 문서 187 개 → 청크 910 개
+(인덱스 13MB).
 
 | 단계 | 시간 |
 |---|---|
-| 검색 | 0.8 ~ 1.0 초 |
-| 첫 토큰 | 0.8 초 (모델이 올라와 있을 때) |
-| 생성 | 20 ~ 33 초 |
+| 수집 (`collect_docs.py`) | 0.7 초 |
+| 전체 인덱싱 | 61 초 (그중 dev-01 CPU 는 6.2 초) |
+| 증분 인덱싱 (변경 없음) | 2.2 초 |
+| 검색 | 0.4 초 |
+| 첫 토큰 | 12 ~ 15 초 |
+| 생성 | 18 ~ 42 초 |
 
-병목은 전부 생성 쪽이다. 검색은 1 초 안쪽으로 일정하다.
+**dev-01 은 병목이 아니다.** 임베딩도 생성도 맥북 Ollama 로 나가기 때문에
+여기서 도는 것은 파일 순회·청킹·HTTP 대기뿐이다. 전체 인덱싱 61 초 중
+dev-01 이 실제로 쓴 CPU 는 6.2 초고 나머지 55 초는 응답을 기다린 시간이다.
+메모리도 HNSW 가 910×1024 차원이라 4MB 수준이라, 4GB 상한에서 제일 큰
+항목은 오히려 langchain 임포트다.
+
+**첫 토큰 12~15 초는 프롬프트 평가 시간이고 모델 적재와는 별개다.** 예전에
+이 표에 "0.8 초 (모델이 올라와 있을 때)" 라고 적혀 있었는데, 그건 같은
+질문을 두 번 던져 Ollama 프롬프트 캐시에 맞은 값이었다. 새 질문은 컨텍스트
+3~5 천 자를 매번 평가해야 해서 12 초 아래로 내려가지 않는다. 캐시에 맞으면
+0.2 초에 나오므로 두 값을 섞어 보면 진단이 어긋난다.
 
 Ollama 는 5 분 놀면 모델을 메모리에서 내린다. 14b 는 9GB 라 다시 올리는
 데만 14 초가 더 붙는데, `query.py` 가 `keep_alive=30m` 을 보내 이걸
@@ -193,7 +217,7 @@ Ollama 는 5 분 놀면 모델을 메모리에서 내린다. 14b 는 9GB 라 다
 
 ## Home Assistant
 
-`homelab-ha` 소스는 `~/git_code/homelab-ha` 를 본다. HA 는 Proxmox VM 위의
+`homelab-ha` 소스는 `~/git_code/homelab/homelab-ha` 를 본다. HA 는 Proxmox VM 위의
 Home Assistant OS(vmid 111)라 `/config` 를 WSL 에서 직접 읽을 수 없다.
 HA 안에서 `/config` 를 git 레포로 만들어 push 하고, 여기서 clone 해 두면
 다른 소스들과 똑같이 다뤄진다(커밋 이력도 `history` 로 들어간다).
@@ -228,7 +252,16 @@ RAG 가 실행을 대신하지는 못하지만, **무엇을 실행할지 고르�
 
 ## 알려진 제약
 
-`chroma_db` 와 원본 문서가 모두 이 PC(WSL)에 있다. 코퍼스 184 건 중
-124 건(`azure-terraform-standard` 107 + `~/.claude` 17)은 git 원격이 없어
-이 머신에만 존재한다. 그래서 지금은 PC 가 켜져 있을 때만 쓸 수 있고,
-k3s 로 옮기려면 이 소스들을 어떻게 할지부터 정해야 한다.
+2026-08-13 에 거점을 회사 노트북 WSL 에서 dev-01(LXC) 로 옮겼다. 상시
+켜져 있는 기계라 "PC 가 켜져 있을 때만 쓸 수 있다" 는 제약은 없어졌다.
+
+남은 것은 **`~/.claude` 22 건이 git 레포가 아니라는 것**이다. 이건
+`context` 카테고리 전체이자 이 코퍼스에서 유일하게 원격이 없는 소스라,
+dev-01 을 다시 만들면 그만큼이 사라진다. `azure-terraform-standard`
+107 건은 원격을 만들어 해결했다.
+
+`homelab-ha` 는 레포는 있지만 비어 있어서 수집이 0 건이고 git log 도
+실패한다(커밋이 없다). HA `/config` 를 push 하면 채워진다.
+
+진짜 병목은 여전히 맥북이다. 임베딩도 생성도 거기서 도니 맥북이 자면
+dev-01 이 떠 있어도 멈춘다.

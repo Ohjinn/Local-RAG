@@ -1,0 +1,16 @@
+[project]
+name = "local-rag"
+version = "0.1.0"
+description = "홈랩 문서 RAG 파이프라인 — 임베딩과 생성 모두 맥북 Ollama 를 쓴다"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain",
+    "langchain-community",
+    "langchain-chroma",
+    "langchain-ollama",
+    "langchain-text-splitters",
+]
+
+[tool.uv]
+# 정확한 버전은 uv.lock 에 박힌다. 여기에 상한을 걸지 않는 대신 lock 을
+# 커밋해서 어느 기계에서든 같은 조합이 서게 한다.

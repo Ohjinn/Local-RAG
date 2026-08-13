@@ -69,7 +69,7 @@ class Source:
 SOURCES = [
     Source(
         alias="homelab-iac",
-        root=HOME / "git_code/homelab-iac",
+        root=HOME / "git_code/homelab/homelab-iac",
         exts={".md", ".tf", ".sh", ".yml", ".yaml"},
         # terraform.tfvars 에는 Proxmox API 토큰과 러너 비밀번호가 실제 값으로
         # 들어 있다. git 추적 대상도 아니다. 절대 넣지 않는다.
@@ -78,7 +78,7 @@ SOURCES = [
     ),
     Source(
         alias="homelab-gitops",
-        root=HOME / "git_code/homelab-gitops",
+        root=HOME / "git_code/homelab/homelab-gitops",
         exts={".md", ".yml", ".yaml", ".py"},
         names={"requirements.txt"},
         # pumpyeong 은 없앨 서비스다. 곧 사라질 것을 인덱스에 넣으면 "떠 있다"
@@ -88,21 +88,21 @@ SOURCES = [
     ),
     Source(
         alias="wizparking",
-        root=HOME / "git_code/wizparking",
+        root=HOME / "git_code/apps/wizparking",
         exts={".md", ".py", ".html"},
         names={"Dockerfile", "requirements.txt"},
         git_log=True,
     ),
     Source(
         alias="azure-standard",
-        root=HOME / "git_code/azure-terraform-standard",
+        root=HOME / "git_code/work/azure-terraform-standard",
         exts={".md", ".tf"},
         exclude={"terraform.tfvars", "secrets"},
         git_log=True,
     ),
     Source(
         alias="homelab-ha",
-        root=HOME / "git_code/homelab-ha",
+        root=HOME / "git_code/homelab/homelab-ha",
         exts={".yaml", ".yml", ".md"},
         # secrets.yaml 에는 API 키와 위경도가 실제 값으로 들어 있다. HA 쪽
         # .gitignore 로도 막지만 여기서도 막는다. 한쪽이 뚫려도 다른 쪽이 잡는다.
