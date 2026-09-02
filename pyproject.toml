@@ -9,6 +9,11 @@ dependencies = [
     "langchain-chroma",
     "langchain-ollama",
     "langchain-text-splitters",
+    # api.py 전용. CLI 만 쓸 때도 같이 깔리지만 가볍고, 갈라 두면 어느 쪽을
+    # 설치해야 하는지 매번 따져야 해서 하나로 둔다.
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
 ]
 
 [tool.uv]
