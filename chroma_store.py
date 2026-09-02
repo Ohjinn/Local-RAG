@@ -41,8 +41,20 @@ def chroma_kwargs():
 
     settings = Settings(anonymized_telemetry=False)
     headers = {}
+
+    # Chroma 1.0 부터 내장 인증이 없어졌다(Rust 재작성). 그래서 집에서는
+    # traefik basicAuth 미들웨어가 앞단에서 막고, 자격증명은 URL 에 실어
+    # 보낸다: http://user:pass@chroma.newhojin.com
+    #
+    # 클러스터 안에서는 Service 로 직접 붙어 인그레스를 안 타므로 자격증명이
+    # 없고, 단독 배포에서는 localhost 바인딩이라 노출 자체가 없다. 셋 다
+    # 같은 코드로 처리된다 — URL 에 user:pass 가 있으면 보내고 없으면 만다.
+    if u.username:
+        import base64
+        raw = "%s:%s" % (u.username, u.password or "")
+        headers["Authorization"] = "Basic " + base64.b64encode(raw.encode()).decode()
+
     if token:
-        # 서버의 CHROMA_AUTH_TOKEN_TRANSPORT_HEADER 와 같아야 한다.
         headers["X-Chroma-Token"] = token
 
     client = chromadb.HttpClient(
@@ -56,5 +68,13 @@ def chroma_kwargs():
 
 
 def describe():
+    """로그에 찍을 저장소 설명.
+
+    URL 에 든 비밀번호는 반드시 가린다. 가리지 않은 채로 출력했다가 실제로
+    자격증명을 노출시켜 교체해야 했다.
+    """
     url = os.environ.get("CHROMA_URL", "").strip()
-    return url if url else "로컬 %s" % LOCAL_DIR
+    if not url:
+        return "로컬 %s" % LOCAL_DIR
+    import re
+    return re.sub(r"(//[^:/@]+:)[^@]*@", r"\1***@", url)

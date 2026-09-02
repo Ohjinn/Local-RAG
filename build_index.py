@@ -269,7 +269,7 @@ def build(full: bool = False) -> None:
 
     if not added and not changed and not removed:
         print("바뀐 것이 없다. 임베딩을 건너뛴다.")
-        print(f"인덱스 유지 → {CHROMA} (청크 {len(store.get(include=[])['ids'])} 개)")
+        print(f"인덱스 유지 → {describe()} (청크 {len(store.get(include=[])['ids'])} 개)")
         return
 
     # 바뀐 문서는 옛 청크를 먼저 지운다. 청크 경계가 달라지면 새로 넣는
@@ -300,7 +300,7 @@ def build(full: bool = False) -> None:
             print(f"  임베딩 {min(i + batch, len(chunks)):5}/{len(chunks)}", flush=True)
 
     total = len(store.get(include=[])["ids"])
-    print(f"\n인덱스 완료 → {CHROMA} "
+    print(f"\n인덱스 완료 → {describe()} "
           f"(collection: {COLLECTION}, embed: {EMBED_MODEL}, 청크 {total} 개)")
 
 
