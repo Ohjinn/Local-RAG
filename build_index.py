@@ -51,7 +51,8 @@ from langchain_text_splitters import (
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 MANIFEST = DATA / "manifest.json"
-CHROMA = ROOT / "chroma_db"
+from chroma_store import chroma_kwargs, describe, LOCAL_DIR as CHROMA
+
 COLLECTION = "homelab"
 
 # 맥북(Mac M3). 공유기에서 static 으로 고정한 주소다. litellm 도 같은
@@ -213,15 +214,29 @@ def build(full: bool = False) -> None:
 
     hashes = {e["path"]: file_hash(DATA / e["path"]) for e in entries}
 
-    if full and CHROMA.exists():
-        shutil.rmtree(CHROMA)
-        print("--full: 기존 인덱스를 지웠다.")
+    # --full 은 로컬과 원격에서 지우는 대상이 다르다. 로컬은 디렉토리를 통째로
+    # 지우면 되지만, 원격에서 같은 짓을 하면 로컬 디렉토리만 지우고 서버의
+    # 컬렉션은 그대로 남는다 — "전체 재생성" 이라 말하고 아무것도 안 지우는
+    # 상황이 된다. 원격일 때는 컬렉션을 지운다.
+    remote = "client" in chroma_kwargs()
+    if full:
+        if remote:
+            import chromadb.errors
+            tmp = Chroma(collection_name=COLLECTION, **chroma_kwargs())
+            try:
+                tmp.delete_collection()
+                print("--full: 원격 컬렉션을 지웠다.")
+            except Exception as e:
+                print(f"--full: 지울 컬렉션이 없거나 실패({type(e).__name__}) — 계속한다.")
+        elif CHROMA.exists():
+            shutil.rmtree(CHROMA)
+            print("--full: 기존 인덱스를 지웠다.")
 
     embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA)
     store = Chroma(
         collection_name=COLLECTION,
         embedding_function=embeddings,
-        persist_directory=str(CHROMA),
+        **chroma_kwargs(),
     )
 
     ids_by_path, hash_by_path, embed_used = read_index(store)
@@ -236,7 +251,7 @@ def build(full: bool = False) -> None:
         store = Chroma(
             collection_name=COLLECTION,
             embedding_function=embeddings,
-            persist_directory=str(CHROMA),
+            **chroma_kwargs(),
         )
         ids_by_path, hash_by_path = {}, {}
 

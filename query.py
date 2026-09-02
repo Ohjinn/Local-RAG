@@ -18,7 +18,8 @@ import time
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
-CHROMA = os.path.join(os.path.dirname(__file__), "chroma_db")
+from chroma_store import chroma_kwargs, describe
+
 COLLECTION = "homelab"
 OLLAMA = os.environ.get("OLLAMA_BASE_URL", "http://192.168.0.44:11434")
 EMBED_MODEL = os.environ.get("RAG_EMBED", "bge-m3")
@@ -61,7 +62,7 @@ def main() -> None:
     store = Chroma(
         collection_name=COLLECTION,
         embedding_function=OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA),
-        persist_directory=CHROMA,
+        **chroma_kwargs(),
     )
 
     where = {}
