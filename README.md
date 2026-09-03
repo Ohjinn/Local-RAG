@@ -18,10 +18,16 @@
 ```
 collect_docs.py   원본 → data/ 로 복사 + manifest.json
       ↓
-build_index.py    카테고리별 청킹 → 임베딩 → chroma_db/
+build_index.py    카테고리별 청킹 → 임베딩 → Chroma
       ↓
-query.py          검색 → 컨텍스트 조립 → 생성
+query.py          검색 → 컨텍스트 조립 → 생성      (CLI)
+api.py            같은 일을 HTTP 로                (서버)
 ```
+
+인덱싱은 **k3s CronJob 이 매일 04:30 KST 에** 돌린다. 손으로 돌리던 시절에는
+코퍼스가 한 달 전에 멈춰 있었고, 어제 고친 것을 물으면 낡은 답이 나왔다.
+매니페스트는 [homelab-gitops](https://github.com/Ohjinn/homelab-gitops)
+`k8s/base/chroma/indexer-cronjob.yml` 에 있다.
 
 ### collect_docs.py
 
@@ -109,6 +115,58 @@ RAG_LLM=qwen2.5:latest python query.py "..."     # 7B, 대략 두 배 빠름
 
 ## 쓰는 법
 
+## HTTP API — api.py
+
+`query.py` 와 같은 로직을 HTTP 로 연다. 검색과 생성을 잇는 지점이 CLI 안에만
+있으면 다른 기계에서 쓸 방법이 없다.
+
+집 안에서 `http://rag.newhojin.com` 으로 열린다(traefik basicAuth).
+
+| 경로 | 맥북 | 시간 | 찾는 기준 |
+|---|---|---|---|
+| `GET /search/text` | **불필요** | 7 ms | 글자가 **그대로** 든 청크 |
+| `GET /search` | 필요 | 150 ms | 뜻이 가까운 청크 |
+| `GET·POST /ask` | 필요 | 25 s | 청크를 읽고 쓴 답 |
+| `POST /v1/chat/completions` | 필요 | — | OpenAI 호환 |
+| `GET /health` | — | — | Chroma·맥북 상태를 **따로** 보고 |
+| `GET /docs` | — | — | Swagger UI |
+
+**경로를 셋으로 나눈 이유는 필요한 것이 다르기 때문이다.** `/ask` 25 초 중
+검색은 0.16 초고 나머지 전부가 생성이다. 청크만 보고 싶을 때 답 생성을
+기다릴 이유가 없다.
+
+`/search/text` 는 임베딩을 하지 않으므로 **맥북이 없어도 동작한다.** 정확한
+식별자(에러 메시지, 커밋 해시, 변수명)를 찾을 때 쓴다. 대신 `"hermes"` 로는
+찾지만 `"헤르메스"` 로는 못 찾는다.
+
+맥북이 자면 뒤의 둘은 **503 과 한국어 설명**을 돌려준다. 스택 트레이스 대신
+"맥북이 자는 중이고 `/search/text` 는 됩니다" 라고 알려 준다 — 왜 안 되는지
+모른 채 헤맨 적이 여러 번 있었다.
+
+**OpenAI 호환 경로가 있어서** litellm 에 모델로 등록하거나 Open WebUI 에서
+`homelab-rag` 로 골라 쓸 수 있다. 모르는 파라미터는 받되 무시한다 — 거절하면
+클라이언트가 붙지 않는다.
+
+```bash
+uv run uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+### CLI 클라이언트
+
+`~/shots/rag` 로 감싸 두었다. curl 플래그를 외울 일이 없다.
+
+```bash
+rag health
+rag text   "ImagePullBackOff" -n 5     # 맥북 불필요
+rag search "hermes 가 왜 안 떴어" -k 6
+rag ask    "백업은 어디로 도나"
+```
+
+셸 함수로 두었더니 계속 걸렸다. `-d` 가 붙으면 curl 이 POST 로 바뀌어 405 가
+나고, `-s` 는 그 에러마저 삼킨다. 파이썬으로 옮겨 그 층을 없앴다.
+
+---
+
 ## 저장소 위치 — 로컬 / 원격
 
 `CHROMA_URL` 이 있으면 k3s 의 Chroma 서버를, 없으면 기존처럼 로컬
@@ -193,7 +251,7 @@ python query.py --show "..."                       # 검색된 청크 원문 출
 ## 성능
 
 2026-08-13 dev-01(LXC, 2 vCPU / 4GB) 실측. 문서 187 개 → 청크 910 개
-(인덱스 13MB).
+(인덱스 13MB). **2026-09-03 현재는 문서 214 개 → 청크 1,059 개.**
 
 | 단계 | 시간 |
 |---|---|
@@ -207,6 +265,20 @@ python query.py --show "..."                       # 검색된 청크 원문 출
 **dev-01 은 병목이 아니다.** 임베딩도 생성도 맥북 Ollama 로 나가기 때문에
 여기서 도는 것은 파일 순회·청킹·HTTP 대기뿐이다. 전체 인덱싱 61 초 중
 dev-01 이 실제로 쓴 CPU 는 6.2 초고 나머지 55 초는 응답을 기다린 시간이다.
+
+### 서버 모드 실측 (2026-09-03)
+
+| 경로 | 시간 |
+|---|---|
+| `/search/text` (전문) | 7 ms |
+| `/search` (의미) | 150 ms |
+| `/ask` (검색 + 생성) | 25 s — 검색 0.16s + 생성 24.9s |
+
+**시간의 99% 가 생성이다.** 검색이 느려서 답이 늦은 것이 아니다. 청크만
+필요하면 `/search` 가 167 배 빠르다.
+
+거리는 **낮을수록 가깝다.** 컬렉션이 `l2`(유클리드 거리)로 잡혀 있어 유사도가
+아니라 거리다. 이걸 거꾸로 읽으면 결과 해석이 통째로 뒤집힌다.
 메모리도 HNSW 가 910×1024 차원이라 4MB 수준이라, 4GB 상한에서 제일 큰
 항목은 오히려 langchain 임포트다.
 
@@ -227,6 +299,15 @@ Ollama 는 5 분 놀면 모델을 메모리에서 내린다. 14b 는 9GB 라 다
 | `OLLAMA_BASE_URL` | `http://192.168.0.44:11434` (맥북, 공유기에서 고정) |
 | `RAG_EMBED` | `bge-m3` |
 | `RAG_LLM` | `qwen2.5:14b` |
+| `CHROMA_URL` | 없음(로컬 `chroma_db/`). 있으면 원격 서버 |
+| `CHROMA_TOKEN` | 없음. 있으면 `X-Chroma-Token` 헤더로 보낸다 |
+
+`CHROMA_URL` 에 `user:pass@` 가 있으면 `Authorization: Basic` 으로 실어 보낸다.
+**Chroma 1.0 부터 내장 인증이 없어서** 앞단(traefik basicAuth)이 막기 때문이다.
+클러스터 안에서는 Service 로 직접 붙어 그 문을 안 지나므로 자격증명이 없다.
+
+**로그에 비밀번호를 찍지 않는다.** 저장소 설명을 URL 그대로 출력했다가 실제로
+노출시켜 자격증명을 교체해야 했다. 지금은 `describe()` 가 가린다.
 
 ## 코퍼스에 넣지 않는 것
 
