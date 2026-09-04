@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -116,13 +117,105 @@ def breadcrumb(entry: dict, headers: list[str]) -> str:
     return " > ".join(trail)
 
 
+# 마크다운 표의 구분선. `|---|---|` 또는 `| :--- | ---: |`
+_TABLE_RULE = re.compile(r"^\s*\|[\s:\-|]+\|\s*$")
+_TABLE_ROW = re.compile(r"^\s*\|")
+
+
+def table_headers_of(section: str) -> list[tuple[int, str]]:
+    """절 안의 **모든** 표에 대해 (시작 위치, 머리글 두 줄) 목록을 만든다.
+
+    처음에는 첫 번째 표의 머리글만 찾아 절 전체에 붙였다. 그게 틀렸다 —
+    한 절에 표가 여럿이면 뒤쪽 표의 조각에 앞쪽 표의 머리글이 붙는다.
+    실제로 디스크 목록 행에 `| OS 이미지 | 업무 구분 | 대상 |` 이 붙었다.
+    **머리글이 없는 것보다 나쁘다.** 값의 뜻을 틀리게 알려 주기 때문이고,
+    검색 거리도 0.834 에서 0.843 으로 오히려 밀렸다.
+
+    그래서 위치까지 같이 들고, 조각마다 바로 앞의 것을 고른다.
+    """
+    out = []
+    pos = 0
+    lines = section.splitlines(keepends=True)
+    starts = []
+    for line in lines:
+        starts.append(pos)
+        pos += len(line)
+
+    for i, line in enumerate(lines):
+        if i == 0:
+            continue
+        if _TABLE_RULE.match(line.rstrip("\n")) and _TABLE_ROW.match(lines[i - 1]):
+            header = lines[i - 1].rstrip() + "\n" + line.rstrip()
+            out.append((starts[i - 1], header))
+    return out
+
+
+def header_for(piece: str, section: str, headers: list[tuple[int, str]]) -> str | None:
+    """이 조각이 속한 표의 머리글을 고른다.
+
+    조각의 첫 줄을 절 안에서 찾아 위치를 알아낸 뒤, 그보다 앞에 있는 표
+    머리글 중 가장 가까운 것을 쓴다. 찾지 못하면 붙이지 않는다 — 틀리게
+    붙이느니 안 붙이는 편이 낫다.
+    """
+    if not headers:
+        return None
+    probe = piece.lstrip().splitlines()[0] if piece.strip() else ""
+    if not probe:
+        return None
+    at = section.find(probe)
+    if at < 0:
+        return None
+    best = None
+    for start, header in headers:
+        if start <= at:
+            best = header
+        else:
+            break
+    return best
+
+
+def restore_table_header(piece: str, header: str | None) -> str:
+    """표 중간부터 시작하는 조각에 머리글을 되돌려 준다.
+
+    긴 표가 청크 크기에 걸려 잘리면 **두 번째 조각부터는 머리글 행을 잃는다.**
+    남는 것은 이런 모양이다 —
+
+        | | 웹로그 수집 서버 #2 | | disk-prd-wcap-02-logs-01 | ... | 64 | ...
+
+    값은 있는데 `64` 가 디스크 GB 인지 메모리인지 알 수 없다. 사람도 모르고
+    임베딩도 모른다. 실제로 "운영계 WEB 서버 사양이 뭐야" 에 답하지 못했고,
+    거리가 0.834 까지 밀렸다(잘 되는 질문은 0.490).
+
+    머리글을 붙이면 두 가지가 같이 좋아진다. 사람이 읽을 수 있게 되고,
+    **"디스크 크기" 같은 단어가 청크 안에 생겨서** 질문과 뜻이 이어진다.
+
+    비용은 작다. 실측으로 머리글 평균 88 자, 대상 청크 평균 1,093 자라
+    청크당 8%, 문서 전체로는 2.9% 다. **청크 개수는 늘지 않는다** — 새로
+    만드는 게 아니라 기존 조각에 덧붙이는 것이라서 벡터 수도 HNSW 도 그대로다.
+    """
+    if not header:
+        return piece
+    stripped = piece.lstrip()
+    # 표 행으로 시작하지 않으면 표 조각이 아니다.
+    if not _TABLE_ROW.match(stripped):
+        return piece
+    # 이미 구분선을 갖고 있으면 머리글이 살아 있는 조각이다.
+    if any(_TABLE_RULE.match(l) for l in piece.splitlines()):
+        return piece
+    return f"{header}\n{piece}"
+
+
 def split_markdown(text: str, entry: dict) -> list[Document]:
     out = []
     for section in md_splitter.split_text(text):
         # 메타데이터 키가 h1..h4 라 정렬하면 문서 상의 순서와 같아진다.
         headers = [section.metadata[k] for k in sorted(section.metadata) if section.metadata[k]]
         crumb = breadcrumb(entry, headers)
+        theads = table_headers_of(section.page_content)
         for piece in size_capper.split_text(section.page_content):
+            piece = restore_table_header(
+                piece, header_for(piece, section.page_content, theads)
+            )
             out.append(
                 Document(
                     page_content=f"{crumb}\n\n{piece}",
